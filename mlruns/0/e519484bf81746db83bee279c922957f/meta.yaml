@@ -1,0 +1,14 @@
+artifact_uri: mlflow-artifacts:/0/e519484bf81746db83bee279c922957f/artifacts
+end_time: 1751131035567
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: e519484bf81746db83bee279c922957f
+run_name: AutoML Training
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1751131009394
+status: 4
+tags: []
+user_id: Kunal Mahendru

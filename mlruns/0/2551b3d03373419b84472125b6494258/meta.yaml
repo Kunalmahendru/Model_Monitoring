@@ -1,0 +1,14 @@
+artifact_uri: mlflow-artifacts:/0/2551b3d03373419b84472125b6494258/artifacts
+end_time: 1751601320075
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 2551b3d03373419b84472125b6494258
+run_name: Dataset_Upload_20250704_092519
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1751601319986
+status: 4
+tags: []
+user_id: KunalMahendru

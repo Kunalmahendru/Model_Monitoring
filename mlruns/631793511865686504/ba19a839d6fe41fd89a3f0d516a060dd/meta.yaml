@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/mlops-automl-project/mlruns/631793511865686504/ba19a839d6fe41fd89a3f0d516a060dd/artifacts
+end_time: 1751131471921
+entry_point_name: ''
+experiment_id: '631793511865686504'
+lifecycle_stage: active
+run_id: ba19a839d6fe41fd89a3f0d516a060dd
+run_name: loud-wren-492
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1751131437776
+status: 3
+tags: []
+user_id: Kunal Mahendru

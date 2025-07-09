@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/mlops-automl-project/mlruns/631793511865686504/fe80732e7a194851b67d391eec020171/artifacts
+end_time: 1751131833320
+entry_point_name: ''
+experiment_id: '631793511865686504'
+lifecycle_stage: active
+run_id: fe80732e7a194851b67d391eec020171
+run_name: stately-skink-925
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1751131745330
+status: 3
+tags: []
+user_id: Kunal Mahendru
