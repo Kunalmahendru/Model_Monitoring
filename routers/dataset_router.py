@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 from utils.file_utils import save_uploaded_file
 from services.automl_services import run_automl
@@ -8,17 +8,251 @@ from fastapi.responses import JSONResponse
 from io import StringIO
 import tempfile
 import mlflow
+import mlflow.h2o
 import h2o
 from h2o.automl import H2OAutoML
+from h2o.estimators import *
 import os
 import logging
 from datetime import datetime
+import json
+import time
+from typing import List, Optional
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Configure MLflow
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "./mlruns")
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+
 router = APIRouter()
+
+# Model mapping for H2O - Only actual H2O algorithms
+MODEL_MAPPING = {
+    'xgboost': (['XGBoost'], 'XGBoost', '🚀'),
+    'randomforest': (['DRF'], 'Random Forest (DRF)', '🌲'),
+    'gbm': (['GBM'], 'Gradient Boosting Machine', '⚡'),
+    'glm': (['GLM'], 'Generalized Linear Model', '📊'),
+    'neural': (['DeepLearning'], 'Deep Learning', '🧠'),
+    'ensemble': (['StackedEnsemble'], 'Stacked Ensemble', '🔗')
+}
+
+def ensure_mlflow_experiment(experiment_name: str = "AutoML_Experiments"):
+    """Ensure MLflow experiment exists and is set"""
+    try:
+        experiment = mlflow.get_experiment_by_name(experiment_name)
+        if experiment is None:
+            experiment_id = mlflow.create_experiment(experiment_name)
+            logger.info(f"Created new experiment: {experiment_name} with ID: {experiment_id}")
+        else:
+            logger.info(f"Using existing experiment: {experiment_name}")
+        mlflow.set_experiment(experiment_name)
+        return True
+    except Exception as e:
+        logger.error(f"MLflow experiment setup error: {str(e)}")
+        return False
+
+def extract_model_parameters(model):
+    """Extract detailed hyperparameters from H2O model"""
+    try:
+        params = {}
+        
+        # Get the model's actual parameters
+        if hasattr(model, 'actual_params') and model.actual_params:
+            for key, value in model.actual_params.items():
+                # Skip internal H2O parameters
+                if not key.startswith('_') and key not in ['training_frame', 'validation_frame', 'response_column']:
+                    params[key] = value
+        
+        # Algorithm-specific parameter extraction
+        algo = model.algo.upper()
+        
+        if algo == 'DRF':  # Random Forest
+            params.update({
+                'ntrees': getattr(model, 'ntrees', None),
+                'max_depth': getattr(model, 'max_depth', None),
+                'min_rows': getattr(model, 'min_rows', None),
+                'mtries': getattr(model, 'mtries', None),
+                'sample_rate': getattr(model, 'sample_rate', None),
+                'col_sample_rate': getattr(model, 'col_sample_rate', None),
+                'binomial_double_trees': getattr(model, 'binomial_double_trees', None),
+            })
+        
+        elif algo == 'GBM':  # Gradient Boosting
+            params.update({
+                'ntrees': getattr(model, 'ntrees', None),
+                'max_depth': getattr(model, 'max_depth', None),
+                'min_rows': getattr(model, 'min_rows', None),
+                'learn_rate': getattr(model, 'learn_rate', None),
+                'sample_rate': getattr(model, 'sample_rate', None),
+                'col_sample_rate': getattr(model, 'col_sample_rate', None),
+                'col_sample_rate_per_tree': getattr(model, 'col_sample_rate_per_tree', None),
+                'min_split_improvement': getattr(model, 'min_split_improvement', None),
+                'histogram_type': getattr(model, 'histogram_type', None),
+                'regularization_x': getattr(model, 'regularization_x', None),
+                'regularization_y': getattr(model, 'regularization_y', None),
+            })
+        
+        elif algo == 'XGBOOST':  # XGBoost
+            params.update({
+                'ntrees': getattr(model, 'ntrees', None),
+                'max_depth': getattr(model, 'max_depth', None),
+                'min_rows': getattr(model, 'min_rows', None),
+                'learn_rate': getattr(model, 'learn_rate', None),
+                'sample_rate': getattr(model, 'sample_rate', None),
+                'col_sample_rate': getattr(model, 'col_sample_rate', None),
+                'col_sample_rate_per_tree': getattr(model, 'col_sample_rate_per_tree', None),
+                'reg_alpha': getattr(model, 'reg_alpha', None),
+                'reg_lambda': getattr(model, 'reg_lambda', None),
+                'booster': getattr(model, 'booster', None),
+                'normalize_type': getattr(model, 'normalize_type', None),
+                'dropout_rate': getattr(model, 'dropout_rate', None),
+            })
+        
+        elif algo == 'GLM':  # Generalized Linear Model
+            params.update({
+                'family': getattr(model, 'family', None),
+                'solver': getattr(model, 'solver', None),
+                'alpha': getattr(model, 'alpha', None),
+                'lambda_': getattr(model, 'lambda_', None),
+                'standardize': getattr(model, 'standardize', None),
+                'remove_collinear_columns': getattr(model, 'remove_collinear_columns', None),
+                'compute_p_values': getattr(model, 'compute_p_values', None),
+                'max_iterations': getattr(model, 'max_iterations', None),
+                'link': getattr(model, 'link', None),
+            })
+        
+        elif algo == 'DEEPLEARNING':  # Neural Network
+            params.update({
+                'hidden': getattr(model, 'hidden', None),
+                'epochs': getattr(model, 'epochs', None),
+                'activation': getattr(model, 'activation', None),
+                'learning_rate': getattr(model, 'learning_rate', None),
+                'momentum': getattr(model, 'momentum', None),
+                'dropout': getattr(model, 'dropout', None),
+                'l1': getattr(model, 'l1', None),
+                'l2': getattr(model, 'l2', None),
+                'input_dropout_ratio': getattr(model, 'input_dropout_ratio', None),
+                'hidden_dropout_ratios': getattr(model, 'hidden_dropout_ratios', None),
+                'adaptive_rate': getattr(model, 'adaptive_rate', None),
+                'rho': getattr(model, 'rho', None),
+                'epsilon': getattr(model, 'epsilon', None),
+            })
+        
+        elif algo == 'STACKEDENSEMBLE':  # Ensemble
+            params.update({
+                'metalearner_algorithm': getattr(model, 'metalearner_algorithm', None),
+                'metalearner_nfolds': getattr(model, 'metalearner_nfolds', None),
+                'metalearner_fold_assignment': getattr(model, 'metalearner_fold_assignment', None),
+                'base_models': str(getattr(model, 'base_models', None)),
+            })
+        
+        # Remove None values and convert to string for MLflow compatibility
+        filtered_params = {}
+        for key, value in params.items():
+            if value is not None:
+                if isinstance(value, (list, tuple)):
+                    filtered_params[key] = str(value)
+                elif isinstance(value, dict):
+                    filtered_params[key] = json.dumps(value)
+                else:
+                    filtered_params[key] = str(value)
+        
+        return filtered_params
+        
+    except Exception as e:
+        logger.warning(f"Could not extract parameters: {str(e)}")
+        return {}
+
+def extract_cv_metrics(model):
+    """Extract cross-validation metrics if available"""
+    try:
+        cv_metrics = {}
+        
+        # Check if model has cross-validation summary
+        if hasattr(model, '_model_json') and model._model_json:
+            model_json = model._model_json
+            
+            # Extract cross-validation metrics
+            if 'output' in model_json and 'cross_validation_metrics_summary' in model_json['output']:
+                cv_summary = model_json['output']['cross_validation_metrics_summary']
+                
+                # Common CV metrics
+                for metric in ['auc', 'logloss', 'rmse', 'mse', 'mean_per_class_error']:
+                    if metric in cv_summary:
+                        # Get mean value if available
+                        metric_data = cv_summary[metric]
+                        if isinstance(metric_data, list) and len(metric_data) > 0:
+                            if isinstance(metric_data[0], list) and len(metric_data[0]) > 0:
+                                cv_metrics[f"{metric}_mean"] = float(metric_data[0][0])
+                                if len(metric_data[0]) > 1:
+                                    cv_metrics[f"{metric}_std"] = float(metric_data[0][1])
+        
+        return cv_metrics
+        
+    except Exception as e:
+        logger.warning(f"Could not extract CV metrics: {str(e)}")
+        return {}
+
+def map_h2o_to_frontend(h2o_model_id: str, selected_models: List[str]) -> dict:
+    """Map H2O model back to frontend model selection"""
+    
+    # Create a clean mapping from H2O algorithm names to frontend info
+    h2o_id_lower = h2o_model_id.lower()
+    
+    # Direct mapping from H2O algorithm to frontend
+    algorithm_mapping = {
+        'xgboost': ('xgboost', 'XGBoost', '🚀'),
+        'drf': ('randomforest', 'Random Forest (DRF)', '🌲'),
+        'gbm': ('gbm', 'Gradient Boosting Machine', '⚡'),
+        'glm': ('glm', 'Generalized Linear Model', '📊'),
+        'deeplearning': ('neural', 'Deep Learning', '🧠'),
+        'stackedensemble': ('ensemble', 'Stacked Ensemble', '🔗')
+    }
+    
+    # Find the matching algorithm
+    for h2o_algo, (frontend_id, display_name, icon) in algorithm_mapping.items():
+        if h2o_algo in h2o_id_lower:
+            # Only return if this model type was actually selected
+            if frontend_id in selected_models:
+                return {
+                    'frontend_id': frontend_id,
+                    'display_name': display_name,
+                    'icon': icon
+                }
+    
+    # Default fallback
+    return {
+        'frontend_id': 'unknown',
+        'display_name': h2o_model_id,
+        'icon': '🤖'
+    }
+
+def initialize_h2o():
+    """Initialize H2O cluster with proper error handling"""
+    try:
+        # Check if H2O is already running
+        try:
+            h2o.cluster().show_status()
+            logger.info("H2O cluster already running")
+            return True
+        except:
+            pass
+        
+        # Initialize H2O
+        h2o.init(max_mem_size="4G", nthreads=-1, port=54321)
+        logger.info("H2O initialized successfully")
+        return True
+    except Exception as e:
+        try:
+            h2o.init(force=True, max_mem_size="4G", nthreads=-1)
+            logger.info("H2O initialized with force=True")
+            return True
+        except Exception as e2:
+            logger.error(f"H2O initialization failed: {str(e2)}")
+            return False
 
 @router.post("/upload-dataset/")
 async def upload_dataset(file: UploadFile = File(...)):
@@ -46,21 +280,26 @@ async def upload_dataset(file: UploadFile = File(...)):
         # Save file
         file_path = await save_uploaded_file(file)
 
+        # Ensure MLflow experiment exists
+        ensure_mlflow_experiment()
+
         # Log file as artifact with metadata
         with mlflow.start_run(run_name=f"Dataset_Upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
             mlflow.log_artifact(file_path, artifact_path="dataset")
             mlflow.log_param("filename", file.filename)
-            mlflow.log_param("file_size_mb", len(contents) / (1024*1024))
+            mlflow.log_param("file_size_mb", round(len(contents) / (1024*1024), 2))
             mlflow.log_param("num_rows", len(df))
             mlflow.log_param("num_columns", len(df.columns))
             mlflow.log_param("target_column", df.columns[-1])
+            mlflow.log_param("upload_timestamp", datetime.now().isoformat())
 
         logger.info(f"Dataset uploaded successfully: {file.filename}")
         return JSONResponse(status_code=200, content={
             "message": f"Dataset '{file.filename}' uploaded successfully!",
             "rows": len(df),
             "columns": len(df.columns),
-            "target": df.columns[-1]
+            "target": df.columns[-1],
+            "run_id": run.info.run_id
         })
     except HTTPException:
         raise
@@ -69,9 +308,25 @@ async def upload_dataset(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": f"Upload failed: {str(e)}"})
 
 @router.post("/train-model/")
-async def train_model(file: UploadFile = File(...)):
+async def train_model(file: UploadFile = File(...), models: str = Form(...)):
+    """Train selected AutoML models with MLflow logging"""
+    tmp_path = None
     try:
         logger.info("Starting AutoML training...")
+        
+        # Parse selected models from frontend
+        try:
+            selected_models = json.loads(models)
+            logger.info(f"Selected models for training: {selected_models}")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid models format")
+        
+        if not selected_models:
+            raise HTTPException(status_code=400, detail="No models selected for training")
+        
+        # Initialize H2O
+        if not initialize_h2o():
+            raise HTTPException(status_code=500, detail="Failed to initialize H2O cluster")
         
         # Read and validate file
         contents = await file.read()
@@ -84,29 +339,24 @@ async def train_model(file: UploadFile = File(...)):
         if df.isnull().sum().sum() > 0:
             logger.warning("Dataset contains null values - H2O will handle this automatically")
 
-        # Set up MLflow experiment
-        experiment_name = "AutoML_Experiments"
-        try:
-            mlflow.create_experiment(experiment_name)
-        except:
-            pass  # Experiment already exists
-        
-        mlflow.set_experiment(experiment_name)
+        # Ensure MLflow experiment exists
+        ensure_mlflow_experiment()
 
-        with mlflow.start_run(run_name=f"AutoML_Training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
-            # Log dataset info
+        with mlflow.start_run(run_name=f"AutoML_Training_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
+            run_id = run.info.run_id
+            logger.info(f"MLflow run started with ID: {run_id}")
+            
+            # Log dataset info and training parameters
             mlflow.log_artifact(tmp_path, artifact_path="dataset")
             mlflow.log_param("dataset_shape", f"{df.shape[0]}x{df.shape[1]}")
             mlflow.log_param("target_column", df.columns[-1])
+            mlflow.log_param("training_timestamp", datetime.now().isoformat())
+            mlflow.log_param("selected_models", selected_models)
+            mlflow.log_param("num_selected_models", len(selected_models))
             
-            # Initialize H2O (handle if already running)
-            try:
-                h2o.init()
-            except:
-                h2o.init(force=True)
-            
-            # Load data and prepare for training
+            # Load data into H2O
             data = h2o.import_file(tmp_path)
+            logger.info(f"Data loaded into H2O: {data.shape}")
             
             # Get target and feature columns
             y = data.columns[-1]  # Assume last column is target
@@ -114,56 +364,259 @@ async def train_model(file: UploadFile = File(...)):
             
             # Convert target to factor for classification
             data[y] = data[y].asfactor()
+            mlflow.log_param("problem_type", "classification")
+            mlflow.log_param("num_features", len(x))
+            mlflow.log_param("num_classes", data[y].nlevels()[0])
             
             # Split data for validation
             train, valid = data.split_frame(ratios=[0.8], seed=1)
+            mlflow.log_param("train_size", train.nrows)
+            mlflow.log_param("valid_size", valid.nrows)
             
-            # Configure AutoML
+            # Map selected models to H2O algorithms
+            h2o_algorithms = []
+            for model_id in selected_models:
+                if model_id in MODEL_MAPPING:
+                    h2o_algorithms.extend(MODEL_MAPPING[model_id][0])  # Get algorithms list
+                else:
+                    logger.warning(f"Unknown model ID: {model_id}, skipping...")
+            
+            # Remove duplicates and log
+            h2o_algorithms = list(set(h2o_algorithms))
+            mlflow.log_param("h2o_algorithms", h2o_algorithms)
+            logger.info(f"H2O algorithms to train: {h2o_algorithms}")
+            
+            # Configure AutoML with selected algorithms
             aml = H2OAutoML(
-                max_models=10,  # Increased for better model variety
+                max_models=20,  # Allow more models for variety
                 seed=1,
-                max_runtime_secs=300,  # 5 minutes max
-                sort_metric="AUC"  # For classification
+                max_runtime_secs=600,  # 10 minutes max
+                sort_metric="AUC",  # For classification
+                include_algos=h2o_algorithms,  # Only train selected algorithms
+                exclude_algos=None,  # Don't exclude any from the selected ones
+                nfolds=5,  # Cross-validation folds
+                balance_classes=True,  # Handle class imbalance
+                stopping_metric="AUC",
+                stopping_tolerance=0.001,
+                stopping_rounds=3
             )
             
-            logger.info("Training AutoML models...")
+            logger.info("Starting AutoML training with selected models...")
+            start_time = datetime.now()
+            
+            # Train the models
             aml.train(x=x, y=y, training_frame=train, validation_frame=valid)
+            
+            training_duration = (datetime.now() - start_time).total_seconds()
+            mlflow.log_metric("training_duration_seconds", training_duration)
+            logger.info(f"Training completed in {training_duration:.2f} seconds")
             
             # Get leaderboard
             lb = aml.leaderboard.as_data_frame()
+            logger.info(f"Training completed. {len(lb)} models trained.")
             
-            # Log metrics for best model
-            best_model = aml.leader
+            # Log overall training metrics
+            mlflow.log_param("total_models_trained", len(lb))
             mlflow.log_metric("best_auc", float(lb.iloc[0]['auc']))
             mlflow.log_metric("best_logloss", float(lb.iloc[0]['logloss']))
             mlflow.log_param("best_model_id", str(lb.iloc[0]['model_id']))
-            mlflow.log_param("total_models_trained", len(lb))
             
-            # Save best model
-            model_path = h2o.save_model(best_model, path="/tmp", force=True)
-            mlflow.log_artifact(model_path, artifact_path="best_model")
+            # Log individual model metrics
+            for idx, row in lb.iterrows():
+                model_prefix = f"model_{idx}"
+                mlflow.log_metric(f"{model_prefix}_auc", float(row['auc']))
+                mlflow.log_metric(f"{model_prefix}_logloss", float(row['logloss']))
+                mlflow.log_param(f"{model_prefix}_id", str(row['model_id']))
+                
+                # **ENHANCED: Log detailed parameters for top 3 models**
+                if idx < 3:  # Top 3 models
+                    try:
+                        model = h2o.get_model(str(row['model_id']))
+                        
+                        # Extract all model parameters
+                        model_params = extract_model_parameters(model)
+                        
+                        # Create nested run for detailed parameter logging
+                        with mlflow.start_run(run_name=f"TOP_{idx+1}_{str(row['model_id'])[:20]}", nested=True):
+                            # Basic model info
+                            mlflow.log_param("rank", idx + 1)
+                            mlflow.log_param("model_id", str(row['model_id']))
+                            mlflow.log_param("algorithm", model.algo)
+                            mlflow.log_param("is_top_performer", True)
+                            
+                            # Performance metrics
+                            mlflow.log_metric("auc", float(row['auc']))
+                            mlflow.log_metric("logloss", float(row['logloss']))
+                            if 'rmse' in row:
+                                mlflow.log_metric("rmse", float(row['rmse']))
+                            if 'mse' in row:
+                                mlflow.log_metric("mse", float(row['mse']))
+                            if 'mean_per_class_error' in row:
+                                mlflow.log_metric("mean_per_class_error", float(row['mean_per_class_error']))
+                            
+                            # **Log all hyperparameters**
+                            for param_name, param_value in model_params.items():
+                                mlflow.log_param(f"hp_{param_name}", param_value)
+                            
+                            # **Extract and log cross-validation metrics**
+                            cv_metrics = extract_cv_metrics(model)
+                            for cv_metric, cv_value in cv_metrics.items():
+                                mlflow.log_metric(f"cv_{cv_metric}", cv_value)
+                            
+                            # **Variable importance for tree-based models**
+                            try:
+                                if hasattr(model, 'varimp') and model.algo.upper() in ['DRF', 'GBM', 'XGBOOST']:
+                                    varimp = model.varimp(use_pandas=True)
+                                    if varimp is not None and len(varimp) > 0:
+                                        # Log top 15 important features
+                                        for var_idx, var_row in varimp.head(15).iterrows():
+                                            feature_name = var_row['variable']
+                                            importance = var_row['relative_importance']
+                                            mlflow.log_metric(f"importance_{feature_name}", importance)
+                                        
+                                        # Save variable importance as artifact
+                                        varimp_file = f"/tmp/varimp_rank_{idx+1}_{str(row['model_id'])[:10]}.csv"
+                                        varimp.to_csv(varimp_file, index=False)
+                                        mlflow.log_artifact(varimp_file, artifact_path="variable_importance")
+                                        os.remove(varimp_file)
+                                        
+                                        # Log summary stats
+                                        mlflow.log_metric("num_features_used", len(varimp))
+                                        mlflow.log_metric("top_feature_importance", varimp.iloc[0]['relative_importance'])
+                            except Exception as varimp_e:
+                                logger.warning(f"Could not extract variable importance for {row['model_id']}: {str(varimp_e)}")
+                            
+                            # **Training metrics and model summary**
+                            try:
+                                # Training time if available
+                                if hasattr(model, '_model_json') and 'output' in model._model_json:
+                                    output = model._model_json['output']
+                                    if 'run_time' in output:
+                                        mlflow.log_metric("training_time_ms", output['run_time'])
+                                    if 'model_summary' in output:
+                                        summary = output['model_summary']
+                                        if isinstance(summary, list) and len(summary) > 1:
+                                            # Log model summary info (varies by algorithm)
+                                            summary_data = summary[1] if len(summary) > 1 else summary[0]
+                                            if isinstance(summary_data, list):
+                                                for i, val in enumerate(summary_data[:5]):  # First 5 summary values
+                                                    try:
+                                                        mlflow.log_metric(f"summary_metric_{i}", float(val))
+                                                    except (ValueError, TypeError):
+                                                        mlflow.log_param(f"summary_param_{i}", str(val))
+                            except Exception as summary_e:
+                                logger.warning(f"Could not extract training summary for {row['model_id']}: {str(summary_e)}")
+                            
+                            # **Save model artifact for top 3**
+                            try:
+                                model_path = h2o.save_model(model, path="/tmp", force=True)
+                                mlflow.log_artifact(model_path, artifact_path=f"top_models/rank_{idx+1}")
+                                
+                                # Also save MOJO if supported
+                                if hasattr(model, 'save_mojo'):
+                                    mojo_path = model.save_mojo(path="/tmp", force=True)
+                                    mlflow.log_artifact(mojo_path, artifact_path=f"mojo_models/rank_{idx+1}")
+                                    os.remove(mojo_path)
+                                
+                                os.remove(model_path)
+                                logger.info(f"Saved artifacts for top model #{idx+1}: {row['model_id']}")
+                            except Exception as save_e:
+                                logger.warning(f"Could not save model artifacts for {row['model_id']}: {str(save_e)}")
+                            
+                            logger.info(f"Detailed logging completed for TOP MODEL #{idx+1}: {row['model_id']}")
+                    
+                    except Exception as detail_e:
+                        logger.error(f"Could not log detailed parameters for top model {row['model_id']}: {str(detail_e)}")
+                
+                # Log model type based on model_id
+                model_type = "unknown"
+                model_id_str = str(row['model_id']).lower()
+                if "xgboost" in model_id_str:
+                    model_type = "XGBoost"
+                elif "drf" in model_id_str:
+                    model_type = "Random Forest"
+                elif "gbm" in model_id_str:
+                    model_type = "GBM"
+                elif "glm" in model_id_str:
+                    model_type = "GLM"
+                elif "deeplearning" in model_id_str:
+                    model_type = "Neural Network"
+                elif "stackedensemble" in model_id_str:
+                    model_type = "Ensemble"
+                
+                mlflow.log_param(f"{model_prefix}_type", model_type)
             
-            logger.info(f"Training completed. Best model: {lb.iloc[0]['model_id']}")
+            # Save and log the best model
+            best_model = aml.leader
+            try:
+                model_path = h2o.save_model(best_model, path="/tmp", force=True)
+                mlflow.log_artifact(model_path, artifact_path="best_model")
+                logger.info(f"Best model saved: {model_path}")
+            except Exception as e:
+                logger.error(f"Failed to save best model: {str(e)}")
+            
+            # Create response with enhanced model information
+            leaderboard_with_types = []
+            for _, row in lb.iterrows():
+                model_dict = row.to_dict()
+                
+                # Use the clean mapping function
+                frontend_info = map_h2o_to_frontend(str(row['model_id']), selected_models)
+                model_dict['model_type'] = frontend_info['display_name']
+                model_dict['frontend_id'] = frontend_info['frontend_id']
+                
+                leaderboard_with_types.append(model_dict)
+            
+            logger.info(f"Training completed successfully. MLflow run ID: {run_id}")
+            
+            # **Log summary insights about top 3 models**
+            try:
+                top_3_summary = {
+                    "top_3_algorithms": [str(lb.iloc[i]['model_id']).split('_')[0] for i in range(min(3, len(lb)))],
+                    "performance_gap": float(lb.iloc[0]['auc'] - lb.iloc[min(2, len(lb)-1)]['auc']) if len(lb) >= 3 else 0,
+                    "best_auc": float(lb.iloc[0]['auc']),
+                    "best_logloss": float(lb.iloc[0]['logloss']),
+                }
+                
+                for key, value in top_3_summary.items():
+                    if isinstance(value, list):
+                        mlflow.log_param(f"summary_{key}", str(value))
+                    else:
+                        mlflow.log_metric(f"summary_{key}", value)
+                
+                logger.info(f"Top 3 models summary: {top_3_summary}")
+            except Exception as summary_e:
+                logger.warning(f"Could not log top 3 summary: {str(summary_e)}")
             
             return JSONResponse(content={
-                "message": f"Training completed! {len(lb)} models trained.",
-                "leaderboard": lb.to_dict(orient="records"),
+                "message": f"Training completed! {len(lb)} models trained from your selection.",
+                "leaderboard": leaderboard_with_types,
                 "best_model": {
                     "id": str(lb.iloc[0]['model_id']),
                     "auc": float(lb.iloc[0]['auc']),
-                    "logloss": float(lb.iloc[0]['logloss'])
+                    "logloss": float(lb.iloc[0]['logloss']),
+                    "type": leaderboard_with_types[0]['model_type']
+                },
+                "training_info": {
+                    "duration_seconds": training_duration,
+                    "selected_models": selected_models,
+                    "h2o_algorithms": h2o_algorithms,
+                    "mlflow_run_id": run_id
                 }
             })
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Training error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
     finally:
         # Clean up temp file
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
 
 @router.post("/preview")
 async def preview_dataset(file: UploadFile = File(...)):
@@ -195,570 +648,41 @@ async def preview_dataset(file: UploadFile = File(...)):
         logger.error(f"Preview error: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
 
+@router.post("/predict/")
+async def predict_single(request_data: dict):
+    """Make predictions using a trained model"""
+    try:
+        model_id = request_data.get('model_id')
+        inputs = request_data.get('inputs', {})
+        
+        if not model_id or not inputs:
+            raise HTTPException(status_code=400, detail="model_id and inputs are required")
+        
+        # Initialize H2O
+        if not initialize_h2o():
+            raise HTTPException(status_code=500, detail="Failed to initialize H2O cluster")
+        
+        # This is a placeholder - in production you'd load the saved model
+        # For now, return a mock prediction
+        logger.info(f"Prediction request for model {model_id} with inputs: {inputs}")
+        
+        return JSONResponse(content={
+            "prediction": 0.75,  # Mock prediction
+            "confidence": 0.85,
+            "model_used": model_id,
+            "status": "success"
+        })
+        
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
 @router.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-
-
-# from fastapi import APIRouter, UploadFile, File, HTTPException, Form
-# from fastapi.responses import JSONResponse
-# from utils.file_utils import save_uploaded_file
-# import pandas as pd
-# from io import StringIO
-# import tempfile
-# import mlflow
-# import mlflow.h2o
-# from mlflow.tracking import MlflowClient
-# import h2o
-# from h2o.automl import H2OAutoML
-# import os
-# import logging
-# from datetime import datetime
-# import json
-# import pickle
-# from typing import Dict, Any, List
-
-# # Set up logging
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
-# # MLflow Configuration
-# MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-# mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
-# # Global variables for model storage
-# trained_models: Dict[str, Any] = {}
-# model_metadata: Dict[str, Dict] = {}
-
-# router = APIRouter()
-
-# def ensure_mlflow_experiment(experiment_name: str = "AutoML_Experiments"):
-#     """Ensure MLflow experiment exists"""
-#     try:
-#         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-#         experiment = mlflow.get_experiment_by_name(experiment_name)
-#         if experiment is None:
-#             experiment_id = mlflow.create_experiment(experiment_name)
-#             logger.info(f"Created new experiment: {experiment_name} with ID: {experiment_id}")
-#         else:
-#             logger.info(f"Using existing experiment: {experiment_name}")
-#         mlflow.set_experiment(experiment_name)
-#         return True
-#     except Exception as e:
-#         logger.error(f"MLflow experiment setup error: {str(e)}")
-#         return False
-
-# def initialize_h2o():
-#     """Initialize H2O cluster"""
-#     try:
-#         h2o.init()
-#         logger.info("H2O initialized successfully")
-#     except Exception as e:
-#         try:
-#             h2o.init(force=True)
-#             logger.info("H2O initialized with force=True")
-#         except Exception as e2:
-#             logger.error(f"H2O initialization failed: {str(e2)}")
-#             raise HTTPException(status_code=500, detail="Failed to initialize H2O")
-
-# @router.post("/upload-dataset/")
-# async def upload_dataset(file: UploadFile = File(...)):
-#     """Upload and validate dataset"""
-#     try:
-#         # Validate file type
-#         if not file.filename.endswith('.csv'):
-#             raise HTTPException(status_code=400, detail="Only CSV files are supported")
-        
-#         # Basic file size check (10MB limit)
-#         contents = await file.read()
-#         if len(contents) > 10 * 1024 * 1024:  # 10MB
-#             raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB")
-        
-#         # Reset file pointer and validate CSV format
-#         await file.seek(0)
-#         try:
-#             df = pd.read_csv(StringIO(contents.decode()))
-#             if df.empty:
-#                 raise HTTPException(status_code=400, detail="CSV file is empty")
-#             if len(df.columns) < 2:
-#                 raise HTTPException(status_code=400, detail="CSV must have at least 2 columns (features + target)")
-#         except Exception as e:
-#             raise HTTPException(status_code=400, detail=f"Invalid CSV format: {str(e)}")
-
-#         # Save file
-#         file_path = await save_uploaded_file(file)
-
-#         # Ensure MLflow experiment exists
-#         ensure_mlflow_experiment()
-
-#         # Log file as artifact with metadata
-#         with mlflow.start_run(run_name=f"Dataset_Upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
-#             mlflow.log_artifact(file_path, artifact_path="dataset")
-#             mlflow.log_param("filename", file.filename)
-#             mlflow.log_param("file_size_mb", round(len(contents) / (1024*1024), 2))
-#             mlflow.log_param("num_rows", len(df))
-#             mlflow.log_param("num_columns", len(df.columns))
-#             mlflow.log_param("target_column", df.columns[-1])
-#             mlflow.log_param("upload_timestamp", datetime.now().isoformat())
-            
-#             # Log basic data statistics
-#             mlflow.log_param("missing_values", df.isnull().sum().sum())
-#             mlflow.log_param("numeric_columns", len(df.select_dtypes(include=['number']).columns))
-#             mlflow.log_param("categorical_columns", len(df.select_dtypes(include=['object']).columns))
-
-#         logger.info(f"Dataset uploaded successfully: {file.filename}")
-#         return JSONResponse(status_code=200, content={
-#             "message": f"Dataset '{file.filename}' uploaded successfully!",
-#             "rows": len(df),
-#             "columns": len(df.columns),
-#             "target": df.columns[-1],
-#             "run_id": run.info.run_id
-#         })
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Upload error: {str(e)}")
-#         return JSONResponse(status_code=500, content={"error": f"Upload failed: {str(e)}"})
-
-# @router.post("/train-model/")
-# async def train_model(file: UploadFile = File(...)):
-#     """Train AutoML models"""
-#     try:
-#         logger.info("Starting AutoML training...")
-        
-#         # Initialize H2O
-#         initialize_h2o()
-        
-#         # Read and validate file
-#         contents = await file.read()
-#         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-#             tmp.write(contents)
-#             tmp_path = tmp.name
-
-#         # Validate dataset
-#         df = pd.read_csv(tmp_path)
-#         if df.isnull().sum().sum() > 0:
-#             logger.warning("Dataset contains null values - H2O will handle this automatically")
-
-#         # Ensure MLflow experiment exists
-#         ensure_mlflow_experiment()
-
-#         with mlflow.start_run(run_name=f"AutoML_Training_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
-#             run_id = run.info.run_id
-            
-#             # Log dataset info
-#             mlflow.log_artifact(tmp_path, artifact_path="dataset")
-#             mlflow.log_param("dataset_shape", f"{df.shape[0]}x{df.shape[1]}")
-#             mlflow.log_param("target_column", df.columns[-1])
-#             mlflow.log_param("training_timestamp", datetime.now().isoformat())
-            
-#             # Load data and prepare for training
-#             data = h2o.import_file(tmp_path)
-            
-#             # Get target and feature columns
-#             y = data.columns[-1]  # Assume last column is target
-#             x = data.columns[:-1]  # All other columns are features
-            
-#             # Convert target to factor for classification
-#             data[y] = data[y].asfactor()
-            
-#             # Split data for validation
-#             train, valid = data.split_frame(ratios=[0.8], seed=1)
-            
-#             # Configure AutoML
-#             aml = H2OAutoML(
-#                 max_models=10,
-#                 seed=1,
-#                 max_runtime_secs=300,  # 5 minutes max
-#                 sort_metric="AUC"
-#             )
-            
-#             logger.info("Training AutoML models...")
-#             aml.train(x=x, y=y, training_frame=train, validation_frame=valid)
-            
-#             # Get leaderboard
-#             lb = aml.leaderboard.as_data_frame()
-            
-#             # Log metrics for best model
-#             best_model = aml.leader
-#             mlflow.log_metric("best_auc", float(lb.iloc[0]['auc']))
-#             mlflow.log_metric("best_logloss", float(lb.iloc[0]['logloss']))
-#             mlflow.log_param("best_model_id", str(lb.iloc[0]['model_id']))
-#             mlflow.log_param("total_models_trained", len(lb))
-            
-#             # Save best model to temporary location
-#             model_path = h2o.save_model(best_model, path="/tmp", force=True)
-#             mlflow.log_artifact(model_path, artifact_path="best_model")
-            
-#             # Store model in memory for predictions
-#             best_model_id = str(lb.iloc[0]['model_id'])
-#             trained_models[best_model_id] = best_model
-#             model_metadata[best_model_id] = {
-#                 "run_id": run_id,
-#                 "model_path": model_path,
-#                 "target_column": y,
-#                 "feature_columns": x,
-#                 "training_time": datetime.now().isoformat(),
-#                 "metrics": {
-#                     "auc": float(lb.iloc[0]['auc']),
-#                     "logloss": float(lb.iloc[0]['logloss'])
-#                 }
-#             }
-            
-#             # Log model metadata
-#             mlflow.log_dict(model_metadata[best_model_id], "model_metadata.json")
-            
-#             logger.info(f"Training completed. Best model: {best_model_id}")
-            
-#             return JSONResponse(content={
-#                 "message": f"Training completed! {len(lb)} models trained.",
-#                 "run_id": run_id,
-#                 "leaderboard": lb.to_dict(orient="records"),
-#                 "best_model": {
-#                     "id": best_model_id,
-#                     "auc": float(lb.iloc[0]['auc']),
-#                     "logloss": float(lb.iloc[0]['logloss'])
-#                 }
-#             })
-
-#     except Exception as e:
-#         logger.error(f"Training error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
-#     finally:
-#         # Clean up temp file
-#         try:
-#             os.unlink(tmp_path)
-#         except:
-#             pass
-
-# @router.post("/predict/")
-# async def predict(file: UploadFile = File(...), model_id: str = Form(...)):
-#     """Make predictions using selected model"""
-#     try:
-#         logger.info(f"Making predictions with model: {model_id}")
-        
-#         # Check if model exists
-#         if model_id not in trained_models:
-#             raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
-        
-#         # Initialize H2O
-#         initialize_h2o()
-        
-#         # Ensure MLflow experiment exists
-#         ensure_mlflow_experiment()
-        
-#         with mlflow.start_run(run_name=f"Prediction_{datetime.now().strftime('%Y%m%d_%H%M%S')}") as run:
-#             # Log prediction request
-#             mlflow.log_param("model_id", model_id)
-#             mlflow.log_param("prediction_file", file.filename)
-#             mlflow.log_param("prediction_timestamp", datetime.now().isoformat())
-            
-#             # Read prediction data
-#             contents = await file.read()
-#             with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-#                 tmp.write(contents)
-#                 tmp_path = tmp.name
-            
-#             # Load data for prediction
-#             df = pd.read_csv(tmp_path)
-#             data = h2o.import_file(tmp_path)
-            
-#             # Get the trained model
-#             model = trained_models[model_id]
-#             metadata = model_metadata[model_id]
-            
-#             # Make predictions
-#             predictions = model.predict(data)
-#             predictions_df = predictions.as_data_frame()
-            
-#             # Convert predictions to serializable format
-#             predictions_list = []
-#             for i in range(len(predictions_df)):
-#                 pred_dict = {}
-#                 for col in predictions_df.columns:
-#                     value = predictions_df.iloc[i][col]
-#                     if pd.isna(value):
-#                         pred_dict[col] = None
-#                     else:
-#                         pred_dict[col] = float(value) if isinstance(value, (int, float)) else str(value)
-#                 predictions_list.append(pred_dict)
-            
-#             # Log prediction results
-#             mlflow.log_metric("num_predictions", len(predictions_list))
-#             mlflow.log_param("prediction_columns", list(predictions_df.columns))
-            
-#             # Save predictions as artifact
-#             pred_file = f"/tmp/predictions_{run.info.run_id}.csv"
-#             predictions_df.to_csv(pred_file, index=False)
-#             mlflow.log_artifact(pred_file, artifact_path="predictions")
-            
-#             # Clean up
-#             os.unlink(tmp_path)
-#             os.unlink(pred_file)
-            
-#             logger.info(f"Predictions completed: {len(predictions_list)} rows")
-            
-#             return JSONResponse(content={
-#                 "message": f"Predictions completed for {len(predictions_list)} rows",
-#                 "predictions": predictions_list,
-#                 "model_id": model_id,
-#                 "run_id": run.info.run_id
-#             })
-            
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Prediction error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-
-# @router.get("/models")
-# async def list_models():
-#     """List all trained models"""
-#     try:
-#         client = MlflowClient()
-        
-#         # Get experiments
-#         experiments = client.search_experiments()
-        
-#         models = []
-#         for exp in experiments:
-#             runs = client.search_runs(exp.experiment_id)
-#             for run in runs:
-#                 if run.info.status == "FINISHED" and "AutoML_Training" in run.info.run_name:
-#                     model_info = {
-#                         "run_id": run.info.run_id,
-#                         "run_name": run.info.run_name,
-#                         "experiment_id": exp.experiment_id,
-#                         "experiment_name": exp.name,
-#                         "status": run.info.status,
-#                         "start_time": run.info.start_time,
-#                         "end_time": run.info.end_time,
-#                         "metrics": run.data.metrics,
-#                         "params": run.data.params
-#                     }
-#                     models.append(model_info)
-        
-#         # Also add currently loaded models
-#         loaded_models = []
-#         for model_id, metadata in model_metadata.items():
-#             loaded_models.append({
-#                 "model_id": model_id,
-#                 "metadata": metadata,
-#                 "status": "loaded"
-#             })
-        
-#         return JSONResponse(content={
-#             "total_models": len(models),
-#             "mlflow_models": models,
-#             "loaded_models": loaded_models
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Model listing error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
-
-# @router.get("/model/{model_id}")
-# async def get_model_details(model_id: str):
-#     """Get details of a specific model"""
-#     try:
-#         if model_id not in model_metadata:
-#             raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
-        
-#         metadata = model_metadata[model_id]
-        
-#         # Get MLflow run details
-#         client = MlflowClient()
-#         run = client.get_run(metadata["run_id"])
-        
-#         return JSONResponse(content={
-#             "model_id": model_id,
-#             "metadata": metadata,
-#             "mlflow_run": {
-#                 "run_id": run.info.run_id,
-#                 "status": run.info.status,
-#                 "start_time": run.info.start_time,
-#                 "end_time": run.info.end_time,
-#                 "metrics": run.data.metrics,
-#                 "params": run.data.params
-#             }
-#         })
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Model details error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Failed to get model details: {str(e)}")
-
-# @router.delete("/model/{model_id}")
-# async def delete_model(model_id: str):
-#     """Delete a model from memory"""
-#     try:
-#         if model_id not in trained_models:
-#             raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
-        
-#         # Remove from memory
-#         del trained_models[model_id]
-#         del model_metadata[model_id]
-        
-#         logger.info(f"Model {model_id} deleted from memory")
-        
-#         return JSONResponse(content={
-#             "message": f"Model {model_id} deleted successfully"
-#         })
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Model deletion error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Failed to delete model: {str(e)}")
-
-# @router.post("/preview")
-# async def preview_dataset(file: UploadFile = File(...)):
-#     """Preview dataset before training"""
-#     try:
-#         # Validate file type
-#         if not file.filename.endswith('.csv'):
-#             raise HTTPException(status_code=400, detail="Only CSV files are supported")
-        
-#         contents = await file.read()
-#         df = pd.read_csv(StringIO(contents.decode()))
-        
-#         # Get basic statistics
-#         numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-#         categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-        
-#         # Calculate basic statistics for numeric columns
-#         numeric_stats = {}
-#         for col in numeric_cols:
-#             numeric_stats[col] = {
-#                 "mean": float(df[col].mean()),
-#                 "std": float(df[col].std()),
-#                 "min": float(df[col].min()),
-#                 "max": float(df[col].max()),
-#                 "median": float(df[col].median())
-#             }
-        
-#         # Calculate value counts for categorical columns (top 10)
-#         categorical_stats = {}
-#         for col in categorical_cols:
-#             value_counts = df[col].value_counts().head(10)
-#             categorical_stats[col] = {
-#                 "unique_values": int(df[col].nunique()),
-#                 "top_values": value_counts.to_dict()
-#             }
-        
-#         preview_data = {
-#             "filename": file.filename,
-#             "columns": df.columns.tolist(),
-#             "sample_rows": df.head(10).to_dict(orient='records'),
-#             "shape": df.shape,
-#             "numeric_columns": numeric_cols,
-#             "categorical_columns": categorical_cols,
-#             "numeric_stats": numeric_stats,
-#             "categorical_stats": categorical_stats,
-#             "missing_values": df.isnull().sum().to_dict(),
-#             "target_column": df.columns[-1],
-#             "target_unique_values": int(df[df.columns[-1]].nunique()) if df.columns[-1] in df.columns else 0,
-#             "data_types": df.dtypes.astype(str).to_dict()
-#         }
-        
-#         return JSONResponse(content=preview_data)
-        
-#     except Exception as e:
-#         logger.error(f"Preview error: {str(e)}")
-#         raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
-
-# @router.get("/health")
-# async def health_check():
-#     """Health check endpoint"""
-#     try:
-#         # Check H2O status
-#         h2o_status = "unknown"
-#         try:
-#             h2o.cluster().show_status()
-#             h2o_status = "running"
-#         except:
-#             h2o_status = "stopped"
-        
-#         # Check MLflow connection
-#         mlflow_status = "unknown"
-#         try:
-#             client = MlflowClient()
-#             experiments = client.search_experiments()
-#             mlflow_status = "connected"
-#         except:
-#             mlflow_status = "disconnected"
-        
-#         return JSONResponse(content={
-#             "status": "healthy",
-#             "timestamp": datetime.now().isoformat(),
-#             "h2o_status": h2o_status,
-#             "mlflow_status": mlflow_status,
-#             "loaded_models": len(trained_models),
-#             "mlflow_tracking_uri": MLFLOW_TRACKING_URI
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Health check error: {str(e)}")
-#         return JSONResponse(status_code=500, content={
-#             "status": "unhealthy",
-#             "error": str(e),
-#             "timestamp": datetime.now().isoformat()
-#         })
-
-# @router.get("/experiments")
-# async def list_experiments():
-#     """List all MLflow experiments"""
-#     try:
-#         client = MlflowClient()
-#         experiments = client.search_experiments()
-        
-#         experiment_list = []
-#         for exp in experiments:
-#             runs = client.search_runs(exp.experiment_id)
-#             experiment_list.append({
-#                 "experiment_id": exp.experiment_id,
-#                 "name": exp.name,
-#                 "lifecycle_stage": exp.lifecycle_stage,
-#                 "total_runs": len(runs),
-#                 "creation_time": exp.creation_time
-#             })
-        
-#         return JSONResponse(content={
-#             "experiments": experiment_list,
-#             "total_experiments": len(experiment_list)
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Experiments listing error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Failed to list experiments: {str(e)}")
-
-# @router.get("/runs/{experiment_id}")
-# async def list_runs(experiment_id: str):
-#     """List all runs in an experiment"""
-#     try:
-#         client = MlflowClient()
-#         runs = client.search_runs(experiment_id)
-        
-#         run_list = []
-#         for run in runs:
-#             run_list.append({
-#                 "run_id": run.info.run_id,
-#                 "run_name": run.info.run_name,
-#                 "status": run.info.status,
-#                 "start_time": run.info.start_time,
-#                 "end_time": run.info.end_time,
-#                 "metrics": run.data.metrics,
-#                 "params": run.data.params
-#             })
-        
-#         return JSONResponse(content={
-#             "experiment_id": experiment_id,
-#             "runs": run_list,
-#             "total_runs": len(run_list)
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Runs listing error: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Failed to list runs: {str(e)}")
+    return {
+        "status": "healthy", 
+        "timestamp": datetime.now().isoformat(),
+        "mlflow_uri": MLFLOW_TRACKING_URI,
+        "h2o_status": "running" if h2o.cluster().is_running() else "stopped"
+    }
