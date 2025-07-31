@@ -1,8 +1,9 @@
 artifact_uri: mlflow-artifacts:/0/e519484bf81746db83bee279c922957f/artifacts
+deleted_time: 1752084649053
 end_time: 1751131035567
 entry_point_name: ''
 experiment_id: '0'
-lifecycle_stage: active
+lifecycle_stage: deleted
 run_id: e519484bf81746db83bee279c922957f
 run_name: AutoML Training
 source_name: ''

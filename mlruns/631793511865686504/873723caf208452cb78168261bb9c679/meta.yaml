@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/mlops-automl-project/mlruns/631793511865686504/873723caf208452cb78168261bb9c679/artifacts
+end_time: 1752085757346
+entry_point_name: ''
+experiment_id: '631793511865686504'
+lifecycle_stage: active
+run_id: 873723caf208452cb78168261bb9c679
+run_name: TOP_1_StackedEnsemble_Best
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1752085756705
+status: 3
+tags: []
+user_id: KunalMahendru

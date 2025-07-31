@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/mlops-automl-project/mlruns/631793511865686504/1f22b72c153e433cbf97ae499117efdb/artifacts
+end_time: 1753965850510
+entry_point_name: ''
+experiment_id: '631793511865686504'
+lifecycle_stage: active
+run_id: 1f22b72c153e433cbf97ae499117efdb
+run_name: TOP_2_XRT_1_AutoML_8_20250
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1753965849436
+status: 3
+tags: []
+user_id: KunalMahendru

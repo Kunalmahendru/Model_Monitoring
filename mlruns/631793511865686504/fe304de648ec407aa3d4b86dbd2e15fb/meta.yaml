@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/mlops-automl-project/mlruns/631793511865686504/fe304de648ec407aa3d4b86dbd2e15fb/artifacts
+end_time: 1753901376573
+entry_point_name: ''
+experiment_id: '631793511865686504'
+lifecycle_stage: active
+run_id: fe304de648ec407aa3d4b86dbd2e15fb
+run_name: TOP_3_DeepLearning_grid_1_
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1753901375741
+status: 3
+tags: []
+user_id: KunalMahendru

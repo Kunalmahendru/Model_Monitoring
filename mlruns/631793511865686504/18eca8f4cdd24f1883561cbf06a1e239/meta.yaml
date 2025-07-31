@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/mlops-automl-project/mlruns/631793511865686504/18eca8f4cdd24f1883561cbf06a1e239/artifacts
+end_time: 1753812679979
+entry_point_name: ''
+experiment_id: '631793511865686504'
+lifecycle_stage: active
+run_id: 18eca8f4cdd24f1883561cbf06a1e239
+run_name: Dataset_Upload_20250729_234119
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1753812679936
+status: 3
+tags: []
+user_id: KunalMahendru
