@@ -38,7 +38,6 @@ const ModelDetailsModal: React.FC<ModelDetailsModalProps> = ({
   advancedSettings,
   formatValue,
   detectedProblemType,
-  onGoToLiveModel
 }) => {
   const [mojoDownloadLoading, setMojoDownloadLoading] = useState(false);
   const [mojoDownloadError, setMojoDownloadError] = useState<string | null>(null);

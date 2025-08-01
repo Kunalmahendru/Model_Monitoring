@@ -28,16 +28,6 @@ export interface ImputationOption {
   label: string;
 }
 
-export interface EncodingOption {
-  value: string;
-  label: string;
-}
-
-export interface TransformOption {
-  value: string;
-  label: string;
-}
-
 /**
  * Detects the data type of a column based on its values
  */
@@ -163,76 +153,6 @@ export const getImputationOptions = (column: string, datasetPreview: DatasetPrev
 };
 
 /**
- * Gets valid encoding options based on column data type
- */
-export const getEncodingOptions = (column: string, datasetPreview: DatasetPreview): EncodingOption[] => {
-  const colType = detectColumnType(column, datasetPreview);
-  
-  switch (colType) {
-    case 'categorical':
-    case 'categorical_numeric':
-      return [
-        { value: 'auto', label: 'Auto (H2O decides)' },
-        { value: 'one_hot', label: 'One-Hot Encoding' },
-        { value: 'label', label: 'Label Encoding' },
-        { value: 'target', label: 'Target Encoding' },
-        { value: 'binary', label: 'Binary Encoding' }
-      ];
-    
-    case 'text':
-      return [
-        { value: 'auto', label: 'Auto (H2O decides)' },
-        { value: 'bag_of_words', label: 'Bag of Words' },
-        { value: 'tfidf', label: 'TF-IDF' },
-        { value: 'word2vec', label: 'Word2Vec' }
-      ];
-    
-    case 'numeric':
-    case 'integer':
-    default:
-      return [
-        { value: 'none', label: 'None (keep as numeric)' },
-        { value: 'auto', label: 'Auto (H2O decides)' }
-      ];
-  }
-};
-
-/**
- * Gets valid transform options based on column data type
- */
-export const getTransformOptions = (column: string, datasetPreview: DatasetPreview): TransformOption[] => {
-  const colType = detectColumnType(column, datasetPreview);
-  
-  switch (colType) {
-    case 'numeric':
-    case 'integer':
-      return [
-        { value: 'none', label: 'None (original values)' },
-        { value: 'normalize', label: 'Normalize (0-1 scale)' },
-        { value: 'standardize', label: 'Standardize (z-score)' },
-        { value: 'log', label: 'Log Transform' },
-        { value: 'sqrt', label: 'Square Root' },
-        { value: 'box_cox', label: 'Box-Cox Transform' },
-        { value: 'auto', label: 'Auto (H2O decides)' }
-      ];
-    
-    case 'categorical':
-    case 'categorical_numeric':
-    case 'text':
-      return [
-        { value: 'none', label: 'None (keep original)' },
-        { value: 'auto', label: 'Auto (H2O decides)' }
-      ];
-    
-    default:
-      return [
-        { value: 'none', label: 'None' },
-        { value: 'auto', label: 'Auto (H2O decides)' }
-      ];
-  }
-};
-
-/**
  * Validates feature configuration and returns warnings for potential issues
  */
 export const getConfigurationWarnings = (
@@ -247,21 +167,18 @@ export const getConfigurationWarnings = (
     
     const colTypeInfo = getColumnTypeInfo(column, datasetPreview);
     
-    // Check for inappropriate imputation
+    // Check for inappropriate imputation only (H2O handles encoding/transforms automatically)
     if (colTypeInfo.type === 'categorical' && ['mean', 'median'].includes(config.impute)) {
-      warnings.push(`⚠️ Column "${column}" is categorical but using numerical imputation (${config.impute}). Use "mode" instead.`);
+      warnings.push(` Column "${column}" is categorical but using numerical imputation (${config.impute}). Use "mode" instead.`);
     }
     
     if (colTypeInfo.type === 'text' && ['mean', 'median'].includes(config.impute)) {
-      warnings.push(`⚠️ Column "${column}" is text but using numerical imputation (${config.impute}). Use "mode" or "unknown" instead.`);
+      warnings.push(` Column "${column}" is text but using numerical imputation (${config.impute}). Use "mode" or "unknown" instead.`);
     }
-    
-    // Check for inappropriate encoding and transforms will be handled by H2O AutoML automatically
-    // Removed encoding and transform validation since we let H2O handle these automatically
     
     // Check for high missing values with drop strategy
     if (config.impute === 'drop' && colTypeInfo.missingCount > datasetPreview.rows.length * 0.5) {
-      warnings.push(`⚠️ Column "${column}" has ${colTypeInfo.missingPercent}% missing values. Dropping rows may remove too much data.`);
+      warnings.push(` Column "${column}" has ${colTypeInfo.missingPercent}% missing values. Dropping rows may remove too much data.`);
     }
   });
   

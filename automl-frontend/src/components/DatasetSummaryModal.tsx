@@ -79,7 +79,7 @@ const DatasetSummaryModal: React.FC<DatasetSummaryModalProps> = ({
     <div className="modal-overlay" onClick={handleOverlayClick}>
       <div className="modal-content" onClick={handleContentClick}>
         <div className="modal-header">
-          <h2>📊 Dataset Summary</h2>
+          <h2> Dataset Summary</h2>
           <button className="modal-close" onClick={handleClose}>✕</button>
         </div>
         <div className="modal-body">

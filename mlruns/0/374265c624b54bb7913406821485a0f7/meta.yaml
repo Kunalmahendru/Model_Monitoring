@@ -1,0 +1,14 @@
+artifact_uri: mlflow-artifacts:/0/374265c624b54bb7913406821485a0f7/artifacts
+end_time: 1754033613150
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 374265c624b54bb7913406821485a0f7
+run_name: gentle-cod-837
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1754033576733
+status: 3
+tags: []
+user_id: KunalMahendru

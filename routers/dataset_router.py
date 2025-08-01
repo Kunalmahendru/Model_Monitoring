@@ -41,148 +41,89 @@ MODEL_MAPPING = {
     'ensemble': (['StackedEnsemble'], 'Stacked Ensemble', '')
 }
 
-def apply_feature_engineering(data, feature_config, target_column):
-    """Apply feature engineering transformations to H2O frame"""
-    logger.info("Applying feature engineering transformations...")
-    
-    # Create a copy to avoid modifying original data
-    processed_data = data
-    columns_to_remove = []
-    
-    for column, config in feature_config.items():
-        if column == target_column:
-            continue  # Skip target column
+def apply_feature_engineering(data, feature_config: dict, target_column: str):
+    """Apply minimal feature engineering - only column selection and imputation"""
+    try:
+        logger.info("Starting feature engineering...")
+        logger.info(f"Columns before feature engineering: {data.columns}")
+        logger.info(f"Feature config received: {feature_config}")
+        
+        # Track transformations applied
+        transformations_applied = []
+        
+        # If feature_config is empty or None, use H2O defaults entirely
+        if not feature_config:
+            logger.info("No feature config provided - using H2O AutoML's intelligent defaults")
+            logger.info("H2O will automatically handle:")
+            logger.info("  - Categorical detection and encoding")
+            logger.info("  - Missing value imputation")
+            logger.info("  - Feature scaling/normalization")
+            logger.info("  - Algorithm-specific preprocessing")
             
-        if not config.get('include', True):
-            # Mark column for removal
-            columns_to_remove.append(column)
-            logger.info(f"Column '{column}' marked for exclusion")
-            continue
-        
-        if column not in processed_data.columns:
-            logger.warning(f"Column '{column}' not found in data, skipping...")
-            continue
+            logger.info("Trusting H2O's automatic feature processing - no manual intervention needed")
+            transformations_applied.append("H2O AutoML automatic preprocessing enabled")
             
-        # Apply missing value imputation
-        impute_method = config.get('impute', 'auto')
-        if impute_method != 'auto':
-            processed_data = apply_imputation(processed_data, column, impute_method)
+            logger.info(f"H2O default processing applied. Transformations: {transformations_applied}")
+            return data
         
-        # Apply encoding for categorical variables
-        encoding_method = config.get('encoding', 'auto')
-        if encoding_method != 'auto':
-            processed_data = apply_encoding(processed_data, column, encoding_method)
-        
-        # Apply transformations for numeric variables
-        transform_method = config.get('transform', 'none')
-        if transform_method != 'none':
-            processed_data = apply_transformation(processed_data, column, transform_method)
-    
-    # Remove excluded columns
-    if columns_to_remove:
-        remaining_columns = [col for col in processed_data.columns if col not in columns_to_remove]
-        processed_data = processed_data[remaining_columns]
-        logger.info(f"Removed {len(columns_to_remove)} excluded columns")
-    
-    logger.info(f"Feature engineering completed. Final shape: {processed_data.shape}")
-    return processed_data
-
-def apply_imputation(data, column, method):
-    """Apply missing value imputation"""
-    try:
-        if method == 'mean':
-            mean_val = data[column].mean()
-            data[column] = data[column].fillna(mean_val)
-        elif method == 'median':
-            median_val = data[column].median()
-            data[column] = data[column].fillna(median_val)
-        elif method == 'mode':
-            mode_val = data[column].mode()[0]
-            data[column] = data[column].fillna(mode_val)
-        elif method == 'constant':
-            data[column] = data[column].fillna(0)
-        elif method == 'drop':
-            # H2O will handle this during training
-            pass
-        
-        logger.info(f"Applied {method} imputation to column '{column}'")
-    except Exception as e:
-        logger.warning(f"Failed to apply {method} imputation to column '{column}': {e}")
-    
-    return data
-
-def apply_encoding(data, column, method):
-    """Apply categorical encoding"""
-    try:
-        if method == 'onehot':
-            # H2O automatically handles one-hot encoding for factors
-            data[column] = data[column].asfactor()
-        elif method == 'label':
-            # Convert to factor (H2O's equivalent of label encoding)
-            data[column] = data[column].asfactor()
-        elif method == 'target':
-            # H2O doesn't support target encoding directly, convert to factor
-            data[column] = data[column].asfactor()
-        elif method == 'none':
-            # Keep as numeric
-            pass
-        
-        logger.info(f"Applied {method} encoding to column '{column}'")
-    except Exception as e:
-        logger.warning(f"Failed to apply {method} encoding to column '{column}': {e}")
-    
-    return data
-
-def apply_transformation(data, column, method):
-    """Apply numeric transformations"""
-    try:
-        if method == 'log':
-            # Add small constant to handle zeros/negatives
-            data[column] = (data[column] + 1e-6).log()
-        elif method == 'sqrt':
-            # Handle negatives by taking absolute value
-            data[column] = data[column].abs().sqrt()
-        elif method == 'standard':
-            # Standardize (mean=0, std=1)
-            mean_val = data[column].mean()
-            std_val = data[column].sd()
-            data[column] = (data[column] - mean_val) / std_val
-        elif method == 'minmax':
-            # Min-Max scaling (0-1)
-            min_val = data[column].min()
-            max_val = data[column].max()
-            data[column] = (data[column] - min_val) / (max_val - min_val)
-        elif method == 'robust':
-            # Robust scaling using median and IQR
-            try:
-                median_val = data[column].median()
-                q75_result = data[column].quantile([0.75])
-                q25_result = data[column].quantile([0.25])
+        # Process explicit feature configuration only when provided
+        logger.info("Processing explicit feature configuration...")
+        for column, config in feature_config.items():
+            logger.info(f"Processing column '{column}' with config: {config}")
+            
+            if column == target_column:
+                logger.info(f"Skipping target column: {column}")
+                continue
                 
-                # Safe conversion for quantile results
-                if hasattr(q75_result, 'as_data_frame'):
-                    q75 = q75_result.as_data_frame().iloc[0, 0]
+            # Handle column exclusion
+            if not config.get('include', True):
+                if column in data.columns:
+                    logger.info(f"EXCLUDING column '{column}' as include=False")
+                    data = data.drop(column)
+                    transformations_applied.append(f"Removed column: {column}")
                 else:
-                    q75 = float(q75_result)
-                    
-                if hasattr(q25_result, 'as_data_frame'):
-                    q25 = q25_result.as_data_frame().iloc[0, 0]
-                else:
-                    q25 = float(q25_result)
-                    
-                iqr = q75 - q25
-                if iqr > 0:
-                    data[column] = (data[column] - median_val) / iqr
-                else:
-                    logger.warning(f"IQR is zero for column '{column}', skipping robust scaling")
-            except Exception as robust_e:
-                logger.warning(f"Failed to apply robust scaling to column '{column}': {robust_e}")
+                    logger.warning(f"Column '{column}' not found in data, cannot exclude")
+                continue
+            
+            if column not in data.columns:
+                logger.warning(f"Column '{column}' not found in data, skipping")
+                continue
+                
+            # Apply explicit imputation ONLY if specified (not 'auto')
+            impute_method = config.get('impute', 'auto')
+            if impute_method != 'auto' and impute_method != 'none':
+                try:
+                    if impute_method == 'mean' and data[column].type == 'real':
+                        data[column] = data[column].impute("mean")
+                        transformations_applied.append(f"Imputed {column} with mean")
+                    elif impute_method == 'median' and data[column].type == 'real':
+                        data[column] = data[column].impute("median")
+                        transformations_applied.append(f"Imputed {column} with median")
+                    elif impute_method == 'mode':
+                        data[column] = data[column].impute("mode")
+                        transformations_applied.append(f"Imputed {column} with mode")
+                except Exception as impute_error:
+                    logger.warning(f"Failed to apply {impute_method} imputation to {column}: {impute_error}")
+                    logger.info(f"H2O will handle missing values for column: {column}")
+            
+            # Let H2O handle ALL encoding and transformations automatically
+            # No manual encoding or transformation logic - H2O is much smarter!
+            logger.info(f"H2O will automatically handle encoding/transformations for column: {column}")
         
-        logger.info(f"Applied {method} transformation to column '{column}'")
+        logger.info(f"Feature engineering completed. Transformations: {transformations_applied}")
+        logger.info(f"Columns after feature engineering: {data.columns}")
+        logger.info("H2O AutoML will now automatically handle:")
+        logger.info("  - Categorical encoding (one-hot, target, etc.)")
+        logger.info("  - Numeric transformations (scaling, normalization)")
+        logger.info("  - Algorithm-specific preprocessing")
+        logger.info("  - Advanced feature interactions")
+        
+        return data
+        
     except Exception as e:
-        logger.warning(f"Failed to apply {method} transformation to column '{column}': {e}")
-    
-    return data
+        logger.error(f"Feature engineering failed: {str(e)}")
+        logger.info("Falling back to H2O's automatic processing - this is perfectly fine!")
+        return data
 
 def ensure_mlflow_experiment(experiment_name: str = "AutoML_Experiments"):
     """Ensure MLflow experiment exists and is set"""
@@ -198,75 +139,6 @@ def ensure_mlflow_experiment(experiment_name: str = "AutoML_Experiments"):
     except Exception as e:
         logger.error(f"MLflow experiment setup error: {str(e)}")
         return False
-
-def apply_feature_engineering(data, feature_config: dict, target_column: str):
-    """Apply feature engineering transformations to H2O data frame"""
-    try:
-        logger.info("Starting feature engineering...")
-        logger.info(f"Columns before feature engineering: {data.columns}")
-        logger.info(f"Feature config received: {feature_config}")
-        
-        # Track transformations applied
-        transformations_applied = []
-        
-        for column, config in feature_config.items():
-            logger.info(f"Processing column '{column}' with config: {config}")
-            
-            if column == target_column:
-                logger.info(f"Skipping target column: {column}")
-                continue
-                
-            if not config.get('include', True):
-                # Remove column if not included
-                if column in data.columns:
-                    logger.info(f"EXCLUDING column '{column}' as include=False")
-                    data = data.drop(column)
-                    transformations_applied.append(f"Removed column: {column}")
-                else:
-                    logger.warning(f"Column '{column}' not found in data, cannot exclude")
-                continue
-            
-            if column not in data.columns:
-                logger.warning(f"Column '{column}' not found in data, skipping")
-                continue
-                
-            # Apply imputation
-            impute_method = config.get('impute', 'auto')
-            if impute_method != 'auto':
-                if impute_method == 'mean' and data[column].type == 'real':
-                    data[column] = data[column].impute("mean")
-                    transformations_applied.append(f"Imputed {column} with mean")
-                elif impute_method == 'median' and data[column].type == 'real':
-                    data[column] = data[column].impute("median")
-                    transformations_applied.append(f"Imputed {column} with median")
-                elif impute_method == 'mode':
-                    data[column] = data[column].impute("mode")
-                    transformations_applied.append(f"Imputed {column} with mode")
-            
-            # Apply encoding (H2O handles most of this automatically)
-            encoding_method = config.get('encoding', 'auto')
-            if encoding_method == 'onehot':
-                # Force one-hot encoding by converting to factor
-                data[column] = data[column].asfactor()
-                transformations_applied.append(f"One-hot encoded: {column}")
-            
-            # Apply transformations
-            transform_method = config.get('transform', 'none')
-            if transform_method != 'none' and data[column].type == 'real':
-                if transform_method == 'log':
-                    data[column] = data[column].log()
-                    transformations_applied.append(f"Log transformed: {column}")
-                elif transform_method == 'sqrt':
-                    data[column] = data[column].sqrt()
-                    transformations_applied.append(f"Sqrt transformed: {column}")
-        
-        logger.info(f"Feature engineering completed. Transformations: {transformations_applied}")
-        logger.info(f"Columns after feature engineering: {data.columns}")
-        return data
-        
-    except Exception as e:
-        logger.error(f"Feature engineering failed: {str(e)}")
-        return data
 
 def log_hyperparameters_to_mlflow(model, model_type: str):
     """Extract and log hyperparameters from H2O model to MLflow"""
@@ -1018,7 +890,7 @@ async def train_model(
             # Configure AutoML with selected algorithms and advanced settings
             aml_config = {
                 "max_models": 20,  # Allow more models for variety
-                "seed": 1,
+                "seed": 42,
                 "max_runtime_secs": max_runtime,  # Use advanced setting
                 "include_algos": h2o_algorithms,  # Only train selected algorithms
                 "exclude_algos": None,  # Don't exclude any from the selected ones

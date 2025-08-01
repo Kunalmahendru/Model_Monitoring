@@ -283,7 +283,6 @@ const TrainingPage: React.FC<TrainingPageProps> = ({
   selectedTargetColumn,
   selectedProblemType,
   onBackToHome,
-  onGoToLiveModel,
   onShowDeployScreen
 }) => {
   const [training, setTraining] = useState(false);
